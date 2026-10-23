@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><script>window.PEER_WEB=1</script><script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#08130e"><script>window.PEER_WEB=1</script><script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style></head><body>
 <title>AyaanTheGOAT World Cup</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -164,6 +164,46 @@ html.big .help-line{font-size:12px;width:min(100%, calc((100vh - 135px)*1.5));wi
 .acts .shoot{background:var(--gold);color:#1a1405;border-color:var(--gold)}
 @media (max-width:420px){.dpad{grid-template-columns:repeat(3,46px);grid-template-rows:repeat(2,46px)}.acts button{height:50px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+/* ---- phones and tablets ---- */
+.rotate-tip{display:none;margin:0;text-align:center;font-size:13px;font-weight:700;color:var(--gold)}
+.stage:has(#ov:not([hidden])) .pad{visibility:hidden}
+html{-webkit-text-size-adjust:100%}
+body{touch-action:manipulation}
+/* phone held upright: controls go under the field so they don't cover it */
+@media (pointer:coarse) and (max-width:600px) and (orientation:portrait){
+  .rotate-tip{display:block}
+  html.big #match{padding-left:max(6px,env(safe-area-inset-left,0px));padding-right:max(6px,env(safe-area-inset-right,0px))}
+  html.big .help-line{display:none}
+  html.big .scoreboard,html.big .stage{width:100%}
+  .touch .pad{position:static;margin-top:8px;gap:8px;align-items:center}
+  .touch .joy{width:min(30vw,118px);height:min(30vw,118px)}
+  .touch .joy .knob{width:48%;height:48%;margin:-24% 0 0 -24%}
+  .touch .acts{flex:1;min-width:0;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}
+  .touch .acts button{height:52px;font-size:clamp(8px,2.5vw,11px);letter-spacing:0;padding:0;border-radius:10px}
+  .big-btn{font-size:12px;padding:4px 8px;top:6px;right:6px}
+}
+/* phone turned sideways: field in the middle, joystick on the left, buttons on the right */
+@media (pointer:coarse) and (max-height:520px) and (orientation:landscape){
+  html.big #match{padding-top:max(4px,env(safe-area-inset-top,0px));padding-bottom:max(4px,env(safe-area-inset-bottom,0px))}
+  html.big #match>.wrap{gap:4px}
+  html.big .scoreboard{padding:0 10px;width:min(calc(100vw - 300px), calc((100dvh - 46px)*1.5))}
+  html.big .sb-round{display:none}
+  html.big .sb-score{font-size:22px}
+  html.big .sb-team{font-size:15px}
+  html.big .sb-clock{font-size:13px}
+  html.big .help-line{display:none}
+  html.big .stage{width:min(calc(100vw - 300px), calc((100dvh - 46px)*1.5))}
+  html.big.touch .pad{position:fixed;top:44px;bottom:max(8px,env(safe-area-inset-bottom,0px));left:max(8px,env(safe-area-inset-left,0px));right:max(8px,env(safe-area-inset-right,0px));align-items:flex-end;z-index:21}
+  html.big.touch .joy{width:128px;height:128px}
+  html.big.touch .joy .knob{width:58px;height:58px;margin:-29px 0 0 -29px}
+  html.big.touch .acts{grid-template-columns:repeat(2,68px);grid-auto-flow:row;gap:5px}
+  html.big.touch .acts button{height:min(calc((100dvh - 80px)/5), 52px);font-size:11px;letter-spacing:0;padding:0;border-radius:10px}
+  .big-btn{font-size:11px;padding:3px 8px;top:4px;right:4px}
+}
+/* bigger tablets held upright: keep everything inside the screen */
+@media (pointer:coarse) and (min-width:601px) and (max-width:900px) and (orientation:portrait){
+  .touch .acts{grid-template-columns:repeat(5,minmax(0,84px))}
+}
 </style>
 
 <div class="wrap">
@@ -345,6 +385,7 @@ html.big .help-line{font-size:12px;width:min(100%, calc((100vh - 135px)*1.5));wi
         <div class="sb-team right"><span id="sb-name1">BRA</span><span class="kit" id="sb-kit1"></span></div>
       </div>
 
+      <p class="rotate-tip" id="rotate-tip">📱 Turn your phone sideways for a bigger field!</p>
       <div class="stage">
         <canvas id="cv3" hidden aria-hidden="true"></canvas>
         <button class="big-btn" id="big-btn" type="button">⛶ Big screen</button>
