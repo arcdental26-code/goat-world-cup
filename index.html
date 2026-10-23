@@ -2812,7 +2812,7 @@ function guestStep(){
   sendInput();
   const hp = NET.game.peers().find(p => !p.isMe && p.presence.role === 'host'), now = performance.now();
   if (hp) NET.lastPeer = now;
-  else if (now - NET.lastPeer > 6000 && S.mode !== 'wait-left'){ S.mode = 'wait-left'; overlay(`<p class="eyebrow">Online match</p><div class="big">${M ? 'Your friend left' : NET.webMsg === 'blocked' ? "Couldn't connect" : NET.webMsg === 'server' ? 'No connection' : 'Game not found'}</div><p class="muted">${M ? 'The match is over.' : NET.webMsg === 'blocked' ? "Your game found your friend's game, but the two computers couldn't link up. Some school or work Wi-Fi blocks this. Try home Wi-Fi or a phone hotspot." : NET.webMsg === 'server' ? "The game couldn't reach the online server. Check the internet and try again." : 'No game has that code right now. One player taps <b>Make a game code</b> first and keeps that page open, then the other player types the same 4 numbers and taps <b>Join</b>. Both need to be on the game website.'}</p>`, 'Menu', showMenu); return; }
+  else if (now - NET.lastPeer > 6000 && S.mode !== 'wait-left'){ S.mode = 'wait-left'; overlay(`<p class="eyebrow">Online match</p><div class="big">${M ? 'Your friend left' : (NET.webMsg === 'blocked' || NET.webMsg === 'linking') ? "Couldn't connect" : NET.webMsg === 'server' ? 'No connection' : 'Game not found'}</div><p class="muted">${M ? 'The match is over.' : (NET.webMsg === 'blocked' || NET.webMsg === 'linking') ? "Your game found your friend's game, but the two computers couldn't link up. Some school or work Wi-Fi blocks this. Try home Wi-Fi or a phone hotspot." : NET.webMsg === 'server' ? "The game couldn't reach the online server. Check the internet and try again." : 'No game has that code right now. One player taps <b>Make a game code</b> first and keeps that page open, then the other player types the same 4 numbers and taps <b>Join</b>. Both need to be on the game website.'}</p>${!M && NET.wlog && NET.wlog.length ? '<p class="muted" style="font-size:11px">Details: ' + NET.wlog.slice(-5).join(' · ').replace(/[<>&]/g, '') + '</p>' : ''}`, 'Menu', showMenu); return; }
   const st = hp && hp.presence.st;
   if (M){ for (const p of M.players){ p.px = p.x; p.py = p.y; } M.ball.px = M.ball.x; M.ball.py = M.ball.y; }
   if (!st || typeof st !== 'object' || !Array.isArray(st.p) || !Array.isArray(st.b)) return;
@@ -2870,8 +2870,9 @@ function webRoom(){
   return {web:true, peers: () => [me], presence: async o => { Object.assign(me.presence, o); }, onPeers(){}, join: name => webGame(String(name).slice(1), NET.joining)};
 }
 const joinStep = t => { const el = $('join-step'); if (el) el.textContent = t; };
+const wlog = t => { (NET.wlog = NET.wlog || []).push(Math.round(performance.now()/100)/10 + 's ' + t); if (NET.wlog.length > 60) NET.wlog.shift(); };
 function webGame(code, role){
-  NET.webMsg = '';
+  NET.webMsg = ''; NET.wlog = []; wlog(role + ' ' + code);
   return new Promise((res, rej) => {
     const me = {peer:'me', isMe:true, sameTab:true, presence:{}}, other = {peer:'friend', isMe:false, presence:{}};
     let conn = null, last = 0, done = false;
@@ -2884,12 +2885,14 @@ function webGame(code, role){
       c.on('open', () => { last = performance.now(); c.send(me.presence); fire(); });
       c.on('data', d => { if (d && typeof d === 'object' && !Array.isArray(d)){ last = performance.now(); Object.assign(other.presence, d); fire(); } });
       c.on('close', () => { if (conn === c){ conn = null; other.presence = {}; fire(); } });
-      c.on('error', () => { if (conn === c && NET.webMsg !== 'nogame') NET.webMsg = 'blocked'; });
-      c.on('iceStateChanged', st => { if (conn === c && st === 'failed'){ NET.webMsg = 'blocked'; joinStep("Couldn't link up with your friend's computer..."); } });
+      c.on('open', () => wlog('link open'));
+      c.on('close', () => wlog('link closed'));
+      c.on('error', e => { wlog('link error ' + (e && (e.type || e.message))); if (conn === c && NET.webMsg !== 'nogame') NET.webMsg = 'blocked'; });
+      c.on('iceStateChanged', st => { wlog('ice ' + st); if (conn === c && st === 'failed'){ NET.webMsg = 'blocked'; joinStep("Couldn't link up with your friend's computer..."); } });
       if (role !== 'host') c.on('open', () => joinStep('Connected! Starting the match...'));
     };
     let tries = 0;
-    const dial = () => { if (peer.destroyed) return; tries++; joinStep(tries > 1 ? `Still looking for game ${code}...` : `Looking for game ${code}...`); attach(peer.connect(PEER_PFX + code, {reliable: true, serialization: 'json'})); };
+    const dial = () => { if (peer.destroyed) return; tries++; if (!NET.webMsg) NET.webMsg = 'linking'; joinStep(tries > 1 ? `Still looking for game ${code}...` : `Looking for game ${code}...`); attach(peer.connect(PEER_PFX + code, {reliable: true, serialization: 'json'})); };
     const g = {
       peers: () => live() ? [me, other] : [me],
       presence: async o => { Object.assign(me.presence, o); if (conn && conn.open) try { conn.send(o); } catch(e) {} },
@@ -2899,14 +2902,16 @@ function webGame(code, role){
     let peer;
     try { peer = role === 'host' ? new Peer(PEER_PFX + code, window.PEER_OPTS || {}) : new Peer(window.PEER_OPTS || {}); } catch(e){ rej(e); return; }
     const t = setTimeout(() => { if (!done){ done = true; try { peer.destroy(); } catch(e) {} rej(new Error('timeout')); } }, 10000);
-    peer.on('open', () => {
+    peer.on('open', id => {
+      wlog('server ok');
       if (done) return; done = true; clearTimeout(t);
       if (role !== 'host') dial();
       res(g);
     });
-    peer.on('connection', c => { if (role === 'host') attach(c); else c.close(); });
-    peer.on('disconnected', () => { try { if (!peer.destroyed) peer.reconnect(); } catch(e) {} });
+    peer.on('connection', c => { wlog('friend calling'); if (role === 'host') attach(c); else c.close(); });
+    peer.on('disconnected', () => { wlog('server lost'); try { if (!peer.destroyed) peer.reconnect(); } catch(e) {} });
     peer.on('error', e => {
+      wlog('error ' + (e && (e.type || e.message)));
       if (!done){ done = true; clearTimeout(t); NET.webMsg = 'server'; try { peer.destroy(); } catch(err) {} rej(e); return; }
       // no game with that code (yet): keep looking for a little while
       if (e && e.type === 'peer-unavailable' && role !== 'host'){ NET.webMsg = 'nogame'; if (tries < 5) setTimeout(dial, 2500); }
