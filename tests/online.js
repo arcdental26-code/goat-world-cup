@@ -2,7 +2,7 @@
 const { chromium } = require('playwright');
 const URL = 'https://arcdental26-code.github.io/goat-world-cup/?t=' + Date.now();
 (async () => {
-  const b = await chromium.launch();
+  const b = await chromium.launch({channel: 'chrome'}); // the runner's own Chrome
   const mk = async (name) => {
     const p = await (await b.newContext()).newPage();
     p.on('console', m => console.log(name, 'console', m.type(), m.text()));

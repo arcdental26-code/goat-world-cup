@@ -6,12 +6,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - run: npm i playwright@1.48.2 && npx playwright install --with-deps chromium
+      - run: npm i playwright@1.48.2
+        env: { PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }
       - name: Wait for the website to have this version
         run: for i in $(seq 1 30); do curl -s "https://arcdental26-code.github.io/goat-world-cup/?t=$RANDOM" | grep -q "server ok" && break; sleep 10; done
       - run: node tests/online.js
