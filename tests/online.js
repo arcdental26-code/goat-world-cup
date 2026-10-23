@@ -1,20 +1,17 @@
 // Two separate browsers play an online match on the live website, through the real connect server.
-// Each run also forces the "relay" route, which is what friends on different Wi-Fi need when a direct link is blocked.
+// The second run forces the relay route, which friends on different Wi-Fi need when a direct link is blocked.
 const { chromium } = require('playwright');
 const URL = 'https://arcdental26-code.github.io/goat-world-cup/?t=' + Date.now();
 const RUNS = {
-  normal: null,
-  relayPeerjs: {iceTransportPolicy: 'relay', iceServers: [{urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp'}]},
-  relayOpenRelay: {iceTransportPolicy: 'relay', iceServers: [{urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject'}]},
-  relayGameConfig: 'game',
+  direct: null,
+  relay: 'force',   // pretend the Wi-Fi blocks a direct link, so the game must use the relay
 };
 (async () => {
   const b = await chromium.launch({channel: 'chrome'}); // the runner's own Chrome
   for (const [run, cfg] of Object.entries(RUNS)){
     const mk = async (name) => {
       const ctx = await b.newContext();
-      if (cfg === 'game') await ctx.addInitScript(() => { window.FORCE_RELAY = 1; });
-      else if (cfg) await ctx.addInitScript(c => { window.PEER_OPTS = {config: c}; }, cfg);
+      if (cfg === 'force') await ctx.addInitScript(() => { window.FORCE_RELAY = 1; });
       const p = await ctx.newPage();
       p.on('pageerror', e => console.log(run, name, 'pageerror', String(e)));
       await p.goto(URL); await p.waitForTimeout(2500);
@@ -31,6 +28,7 @@ const RUNS = {
       g = await B.evaluate(() => ({ov: !document.getElementById('ov').hidden && document.getElementById('ov-card').textContent, step: (document.getElementById('join-step')||{}).textContent}));
       ok = !g.ov && (await A.evaluate(() => document.getElementById('ov').hidden));
     }
+    if (ok){ await B.waitForTimeout(6000); console.log(run, 'clocks after 6s: host', await A.textContent('#sb-clock'), 'guest', await B.textContent('#sb-clock')); }
     console.log('RESULT', run, ok ? 'CONNECTED' : 'FAILED', JSON.stringify(g));
     await A.context().close(); await B.context().close();
   }

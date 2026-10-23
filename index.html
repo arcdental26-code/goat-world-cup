@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#08130e"><script>window.PEER_WEB=1</script><script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#08130e"><script>window.PEER_WEB=1</script><script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script><script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style></head><body>
 <title>AyaanTheGOAT World Cup</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -2871,33 +2871,74 @@ function webRoom(){
 }
 const joinStep = t => { const el = $('join-step'); if (el) el.textContent = t; };
 const wlog = t => { (NET.wlog = NET.wlog || []).push(Math.round(performance.now()/100)/10 + 's ' + t); if (NET.wlog.length > 60) NET.wlog.shift(); };
+// If the two computers can't link up directly (some Wi-Fi blocks it), the game is passed through a free
+// public message relay instead. Only nicknames, teams and game moves go through it.
+const RELAY_URL = 'wss://broker.emqx.io:8084/mqtt';
 function webGame(code, role){
   NET.webMsg = ''; NET.wlog = []; wlog(role + ' ' + code);
   return new Promise((res, rej) => {
     const me = {peer:'me', isMe:true, sameTab:true, presence:{}}, other = {peer:'friend', isMe:false, presence:{}};
-    let conn = null, last = 0, done = false;
+    let conn = null, last = 0, done = false, relay = null, viaRelay = false, relayN = 0;
     const cbs = [], fire = () => cbs.forEach(f => { try { f(); } catch(e) {} });
-    const live = () => conn && conn.open && performance.now() - last < 4000;
+    const live = () => (viaRelay || (conn && conn.open)) && performance.now() - last < 4000;
+    const topic = w => 'ayaangoat-wc26/' + code + '/' + w;
+    const relaySend = o => { if (relay && relay.connected) try { relay.publish(topic(role === 'host' ? 'g' : 'h'), JSON.stringify(o)); } catch(e) {} };
+    const startRelay = () => new Promise(r => {
+      if (relay) return r(relay.connected ? relay : null);
+      if (!window.mqtt) return r(null);
+      try { relay = mqtt.connect(window.RELAY_URL || RELAY_URL, {clean: true, connectTimeout: 8000, reconnectPeriod: 2000}); } catch(e){ return r(null); }
+      relay.on('connect', () => { relay.subscribe(topic(role === 'host' ? 'h' : 'g')); wlog('relay ok'); r(relay); });
+      relay.on('error', e => wlog('relay error ' + (e && e.message)));
+      relay.on('message', (tp, buf) => {
+        let d; try { d = JSON.parse(String(buf)); } catch(e){ return; }
+        if (!d || typeof d !== 'object' || Array.isArray(d)) return;
+        if (role === 'host' && !viaRelay && !(conn && conn.open)){ viaRelay = true; other.presence = {}; wlog('friend via relay'); }
+        if (!viaRelay) return;
+        last = performance.now();
+        if (d.hello){ delete d.hello; relaySend(me.presence); }
+        Object.assign(other.presence, d); fire();
+      });
+      setTimeout(() => r(relay && relay.connected ? relay : null), 9000);
+    });
+    const useRelay = async () => {
+      if (viaRelay || (conn && conn.open) || NET.webMsg === 'nogame' || peer.destroyed) return;
+      joinStep('Trying another way to reach your friend...'); wlog('trying relay');
+      const r = await startRelay();
+      if (!r || (conn && conn.open)) return;
+      viaRelay = true; last = performance.now(); NET.webMsg = 'linking';
+      if (conn) try { conn.close(); } catch(e) {}
+      relaySend(Object.assign({hello: 1}, me.presence));
+      const ping = setInterval(() => { if (peer.destroyed || other.presence.role){ clearInterval(ping); if (other.presence.role) joinStep('Connected! Starting the match...'); return; } relaySend(Object.assign({hello: 1}, me.presence)); }, 1500);
+    };
     const attach = c => {
+      if (viaRelay){ c.on('open', () => c.close()); return; }
       if (conn && conn !== c && live()){ c.on('open', () => c.close()); return; }
       if (conn && conn !== c) try { conn.close(); } catch(e) {}
       conn = c; other.presence = {}; last = performance.now();
-      c.on('open', () => { last = performance.now(); c.send(me.presence); fire(); });
-      c.on('data', d => { if (d && typeof d === 'object' && !Array.isArray(d)){ last = performance.now(); Object.assign(other.presence, d); fire(); } });
-      c.on('close', () => { if (conn === c){ conn = null; other.presence = {}; fire(); } });
-      c.on('open', () => wlog('link open'));
-      c.on('close', () => wlog('link closed'));
-      c.on('error', e => { wlog('link error ' + (e && (e.type || e.message))); if (conn === c && NET.webMsg !== 'nogame') NET.webMsg = 'blocked'; });
-      c.on('iceStateChanged', st => { wlog('ice ' + st); if (conn === c && st === 'failed'){ NET.webMsg = 'blocked'; joinStep("Couldn't link up with your friend's computer..."); } });
-      if (role !== 'host') c.on('open', () => joinStep('Connected! Starting the match...'));
+      c.on('open', () => { if (viaRelay){ c.close(); return; } wlog('link open'); last = performance.now(); c.send(me.presence); fire(); if (role !== 'host') joinStep('Connected! Starting the match...'); });
+      c.on('data', d => { if (!viaRelay && d && typeof d === 'object' && !Array.isArray(d)){ last = performance.now(); Object.assign(other.presence, d); fire(); } });
+      c.on('close', () => { wlog('link closed'); if (conn === c){ conn = null; if (!viaRelay){ other.presence = {}; fire(); } } });
+      c.on('error', e => { wlog('link error ' + (e && (e.type || e.message))); if (conn === c && NET.webMsg !== 'nogame') NET.webMsg = 'blocked'; if (role !== 'host') useRelay(); });
+      c.on('iceStateChanged', st => { wlog('ice ' + st); if (conn === c && st === 'failed'){ NET.webMsg = 'blocked'; if (role !== 'host') useRelay(); } });
     };
     let tries = 0;
-    const dial = () => { if (peer.destroyed) return; tries++; if (!NET.webMsg) NET.webMsg = 'linking'; joinStep(tries > 1 ? `Still looking for game ${code}...` : `Looking for game ${code}...`); attach(peer.connect(PEER_PFX + code, {reliable: true, serialization: 'json'})); };
+    const dial = () => {
+      if (peer.destroyed || viaRelay) return; tries++; if (!NET.webMsg) NET.webMsg = 'linking';
+      joinStep(tries > 1 ? `Still looking for game ${code}...` : `Looking for game ${code}...`);
+      if (window.FORCE_RELAY){ useRelay(); return; }
+      attach(peer.connect(PEER_PFX + code, {reliable: true, serialization: 'json'}));
+      // a direct link normally opens in a second or two; if not, go through the relay
+      setTimeout(() => { if (!(conn && conn.open)) useRelay(); }, 6000);
+    };
     const g = {
       peers: () => live() ? [me, other] : [me],
-      presence: async o => { Object.assign(me.presence, o); if (conn && conn.open) try { conn.send(o); } catch(e) {} },
+      presence: async o => {
+        Object.assign(me.presence, o);
+        if (viaRelay){ if (!(o.st || o.in) || (relayN++ & 1) === 0) relaySend(o); }  // half as many updates through the relay
+        else if (conn && conn.open) try { conn.send(o); } catch(e) {}
+      },
       onPeers: f => { cbs.push(f); },
-      leave: () => { try { peer.destroy(); } catch(e) {} }
+      leave: () => { try { peer.destroy(); } catch(e) {} try { if (relay) relay.end(true); } catch(e) {} }
     };
     let peer;
     try { peer = role === 'host' ? new Peer(PEER_PFX + code, window.PEER_OPTS || {}) : new Peer(window.PEER_OPTS || {}); } catch(e){ rej(e); return; }
@@ -2905,7 +2946,7 @@ function webGame(code, role){
     peer.on('open', id => {
       wlog('server ok');
       if (done) return; done = true; clearTimeout(t);
-      if (role !== 'host') dial();
+      if (role === 'host') startRelay(); else dial();
       res(g);
     });
     peer.on('connection', c => { wlog('friend calling'); if (role === 'host') attach(c); else c.close(); });
