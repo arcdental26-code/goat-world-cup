@@ -2886,7 +2886,7 @@ function webGame(code, role){
     if (!window.claude){
       // a saved copy can't go online: offer a button that opens the online game
       $('on-off').textContent = "This copy of the game can't go online. Tap the button to open the online game!";
-      const go = document.createElement('a'); go.className = 'btn'; go.href = 'https://claude.ai/artifact/GAqjpBUBUymugZUxXPsFJs'; go.target = '_blank'; go.rel = 'noopener';
+      const go = document.createElement('a'); go.className = 'btn'; go.href = 'https://arcdental26-code.github.io/goat-world-cup/'; go.target = '_blank'; go.rel = 'noopener';
       go.textContent = '🌐 Play online'; go.style.display = 'inline-block'; go.style.marginTop = '10px'; go.style.textDecoration = 'none';
       $('on-off').after(go);
     } else $('on-off').textContent = "Online needs you to be signed in to claude.ai, and the game's owner has to share the game with your account from the Share menu. Ask a grown-up to check that, then reload the page.";
