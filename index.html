@@ -290,8 +290,8 @@ body{touch-action:manipulation}
       </select>
       <label for="gfx">Graphics</label>
       <select id="gfx">
-        <option value="toon" selected>Cartoon 3D (like Mini Soccer Star)</option>
-        <option value="3d">Realistic 3D</option>
+        <option value="3d" selected>Realistic 3D (real-looking players)</option>
+        <option value="toon">Cartoon 3D (like Mini Soccer Star)</option>
         <option value="2d">2D (for slow devices)</option>
       </select>
       <label for="players">Players</label>
@@ -2335,22 +2335,209 @@ function mergeParts(root){
     }
     for (const [m, list] of byMat){
       if (list.length < 2) continue;
-      const pos = [], nor = [];
+      const pos = [], nor = [], uvs = [];
       for (const ch of list){
         ch.updateMatrix();
         const geo = (ch.geometry.index ? ch.geometry.toNonIndexed() : ch.geometry.clone()); geo.applyMatrix4(ch.matrix);
         pos.push(geo.attributes.position.array); nor.push(geo.attributes.normal.array);
-        grp.remove(ch); ch.geometry.dispose();
+        if (geo.attributes.uv) uvs.push(geo.attributes.uv.array);
+        grp.remove(ch); ch.geometry.dispose(); geo.dispose();
       }
       const cat = arrs => { const n = arrs.reduce((a, b) => a + b.length, 0), out = new Float32Array(n); let o = 0; for (const a of arrs){ out.set(a, o); o += a.length; } return out; };
       const geo = new T.BufferGeometry();
       geo.setAttribute('position', new T.BufferAttribute(cat(pos), 3)); geo.setAttribute('normal', new T.BufferAttribute(cat(nor), 3));
+      if (uvs.length === list.length) geo.setAttribute('uv', new T.BufferAttribute(cat(uvs), 2)); // keeps the cloth texture on
       const mesh = new T.Mesh(geo, m); mesh.castShadow = true; grp.add(mesh);
     }
   }
 }
+// ---------- Lifelike 3D players (the "Realistic 3D" look) ----------
+// Every body part is a smooth shape made with code: muscles, a face with eyes and eyebrows, hands, boots and cloth
+function clothTex(kind){
+  const key = 'tex_' + kind; if (G3[key]) return G3[key];
+  const t = canvasTex(128, 128, (c, w, h) => {
+    c.fillStyle = '#ffffff'; c.fillRect(0, 0, w, h);
+    if (kind === 'knit'){
+      // tiny holes like a real football shirt
+      for (let y = 0; y < h; y += 4) for (let x = (y/4)%2 ? 2 : 0; x < w; x += 4){ c.fillStyle = 'rgba(0,0,0,0.13)'; c.fillRect(x, y, 2, 2); }
+      // soft creases in the cloth
+      for (let i = 0; i < 5; i++){ const x = 10 + i*26, gr = c.createLinearGradient(x - 9, 0, x + 9, 0); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.09)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = gr; c.fillRect(x - 9, 0, 18, h); }
+    } else if (kind === 'rib'){
+      // stripes going down, like stretchy socks
+      for (let x = 0; x < w; x += 6){ c.fillStyle = 'rgba(0,0,0,0.16)'; c.fillRect(x, 0, 2, h); }
+    }
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  if (kind === 'knit') t.repeat.set(3, 2);
+  else if (kind === 'rib') t.repeat.set(4, 1);
+  G3[key] = t; return t;
+}
+function makeRealPlayer3D(p, kit, isGk){
+  const T = THREE, g = new T.Group();
+  const lin = c => new T.Color(c).convertSRGBToLinear();
+  const mat = (c, rough, opt) => new T.MeshStandardMaterial(Object.assign({color: lin(c), roughness: rough || 0.65}, opt || {}));
+  const cloth = (c, kind, rough) => { const tx = clothTex(kind); return mat(c, rough || 0.8, {map: tx, bumpMap: tx, bumpScale: 0.035, side: T.DoubleSide}); };
+  const shirtC = isGk ? (p.team===0 ? '#22c55e' : '#f59e0b') : kit.shirt;
+  const shirt2C = !isGk && kit.rainbow ? kit.shirt2 : shirtC;
+  const shortsC = isGk ? '#1f2937' : kit.shorts;
+  const trimC = isGk ? '#111827' : (kit.trim || (kit.rainbow ? '#ffffff' : shortsC));
+  const skin = mat(p.skin, 0.58, {emissive: lin(p.skin), emissiveIntensity: 0.05});
+  const shirt = cloth(shirtC, 'knit'), shirt2 = cloth(shirt2C, 'knit'), shorts = cloth(shortsC, 'knit', 0.75);
+  const sock = cloth(isGk ? shirtC : shirt2C, 'rib', 0.85), trim = mat(trimC, 0.6, {side: T.DoubleSide});
+  const boot = mat(p.cleat, 0.28, {metalness: 0.15}), sole = mat('#e5e7eb', 0.5), white = mat('#f3f4f6', 0.6);
+  const glove = mat('#f5f5f5', 0.5), dark = mat('#141414', 0.25), hairM = mat(p.hair, 0.8);
+  const add = (geo, m, x, y, z, parent) => { const o = new T.Mesh(geo, m); o.position.set(x, y, z); o.castShadow = true; (parent || g).add(o); return o; };
+  // a smooth round body part made from a side outline [radius, height] (like a pot on a pottery wheel)
+  const lathe = (pts, segs, phi0, phiLen) => new T.LatheGeometry(new T.SplineCurve(pts.map(([r, y]) => new T.Vector2(r, y))).getPoints(10), segs || 14, phi0 || 0, phiLen || Math.PI*2);
+  const ball = (r, m, x, y, z, sx, sy, sz, parent, seg) => { const o = add(new T.SphereGeometry(r, seg || 14, seg ? Math.round(seg*0.7) : 10), m, x, y, z, parent); o.scale.set(sx || 1, sy || 1, sz || 1); return o; };
+  const legs = [], arms = [], knees = [], elbows = [];
+  // Legs: thigh muscles, knees, shin pads under the socks, real boots
+  for (const side of [-1, 1]){
+    const hip = new T.Group(); hip.position.set(0, 14.3, side*1.55); g.add(hip);
+    add(lathe([[1.1, -6.6], [1.32, -5.4], [1.58, -3.8], [1.72, -2.0], [1.75, -0.4], [1.6, 0.4]]), skin, 0, 0, 0, hip);
+    ball(1.15, skin, 0.42, -3.3, 0, 0.9, 2.1, 1.0, hip); // front thigh muscle
+    add(lathe([[1.9, -4.3], [1.88, -3.0], [1.84, -1.2], [1.8, 0.6]], 18), shorts, 0, 0, 0, hip);
+    const hem = add(new T.TorusGeometry(1.88, 0.08, 6, 22), mat(shade(shortsC, -0.2)), 0, -4.3, 0, hip); hem.rotation.x = Math.PI/2;
+    const knee = new T.Group(); knee.position.set(0, -6.3, 0); hip.add(knee);
+    ball(1.05, skin, 0.18, 0.05, 0, 1, 1, 1, knee);
+    ball(0.58, skin, 0.55, -0.15, 0, 0.8, 1, 1.15, knee); // kneecap
+    add(lathe([[0.66, -6.95], [0.8, -5.6], [1.1, -4.0], [1.3, -2.4], [1.27, -1.3], [1.2, -0.85]]), sock, 0, 0, 0, knee);
+    ball(0.95, sock, -0.38, -2.5, 0, 1, 1.9, 1.08, knee); // calf muscle
+    ball(0.95, sock, 0.5, -3.1, 0, 0.6, 2.1, 1.0, knee);  // shin pad
+    add(lathe([[1.24, -1.25], [1.29, -0.95], [1.27, -0.6]]), trim, 0, 0, 0, knee); // sock top
+    // boot
+    add(new T.CylinderGeometry(0.74, 0.8, 0.8, 14), boot, 0, -6.95, 0, knee);
+    ball(1, boot, 0.85, -7.35, 0, 1.95, 0.6, 0.78, knee);
+    ball(0.85, boot, -0.45, -7.3, 0, 1.05, 0.75, 0.9, knee);
+    add(new T.BoxGeometry(3.9, 0.22, 1.5), sole, 0.7, -7.76, 0, knee);
+    for (let i = 0; i < 3; i++) add(new T.BoxGeometry(0.16, 0.08, 0.7), white, 1.0 + i*0.4, -6.86 - i*0.05, 0, knee); // laces
+    const swoosh = add(new T.BoxGeometry(1.8, 0.2, 0.06), white, 0.7, -7.35, side*0.79, knee); swoosh.rotation.z = 0.15;
+    legs.push(hip); knees.push(knee);
+  }
+  // Shorts around the hips
+  const pelvis = new T.Group(); pelvis.position.set(0, 14.6, 0); pelvis.scale.set(0.8, 1, 1.05); g.add(pelvis);
+  add(lathe([[2.42, -1.4], [2.52, -0.4], [2.5, 0.6], [2.42, 1.4]], 22), shorts, 0, 0, 0, pelvis);
+  // Chest and back: wide shoulders, slim waist, and the shirt hangs a little over the shorts
+  const prof = [[2.45, -0.7], [2.38, 0.6], [2.45, 1.8], [2.75, 3.4], [3.1, 5.0], [3.22, 6.1], [3.05, 6.95], [2.3, 7.55], [1.2, 7.9]];
+  const torso = new T.Group(); torso.position.set(0, 15.4, 0); torso.scale.set(0.68, 1, 1.1); g.add(torso);
+  add(lathe(prof, 14, 0, Math.PI), shirt, 0, 0, 0, torso);
+  add(lathe(prof, 14, Math.PI, Math.PI), shirt2, 0, 0, 0, torso);
+  ball(1.5, shirt, 1.25, 5.3, 1.2, 0.6, 0.85, 1.1, torso); ball(1.5, shirt2, 1.25, 5.3, -1.2, 0.6, 0.85, 1.1, torso); // chest muscles under the shirt
+  if (kit.check && !isGk){ const ch = add(lathe(prof, 10), new T.MeshStandardMaterial({color:'#ffffff', wireframe:true}), 0, 0, 0, torso); ch.scale.set(1.02, 1, 1.02); }
+  const hemT = add(new T.TorusGeometry(2.45, 0.12, 6, 26), trim, 0, -0.68, 0, torso); hemT.rotation.x = Math.PI/2;
+  // Neck and collar
+  add(lathe([[1.3, 22.7], [0.98, 23.4], [0.86, 24.2], [0.88, 25.2]]), skin, 0, 0, 0);
+  const collar = add(new T.TorusGeometry(1.08, 0.24, 8, 22), trim, 0.05, 23.2, 0); collar.rotation.x = Math.PI/2; collar.rotation.y = -0.18;
+  // Arms: shoulders, sleeves, muscles, elbows, hands with a thumb (keepers have long sleeves and big gloves)
+  for (const side of [-1, 1]){
+    const sh = new T.Group(); sh.position.set(0, 22.4, side*3.45); g.add(sh);
+    const sl = side < 0 ? shirt : shirt2, armM = isGk ? sl : skin;
+    ball(1.18, sl, 0, -0.2, -side*0.1, 1.0, 1.0, 0.95, sh, 16);
+    add(lathe([[1.16, -2.9], [1.2, -2.2], [1.22, -1.0], [1.15, 0.0]], 16), sl, 0, 0, 0, sh);
+    const sHem = add(new T.TorusGeometry(1.15, 0.09, 6, 18), trim, 0, -2.88, 0, sh); sHem.rotation.x = Math.PI/2;
+    add(lathe([[0.74, -4.8], [0.86, -4.1], [0.98, -3.1], [1.0, -2.2], [0.95, -1.0]]), armM, 0, 0, 0, sh);
+    ball(0.6, armM, 0.32, -3.4, 0, 1, 1.7, 1, sh); // biceps
+    const el = new T.Group(); el.position.set(0, -4.7, 0); sh.add(el);
+    ball(0.7, armM, 0, 0, 0, 1, 1, 1, el);
+    add(lathe([[0.5, -4.0], [0.56, -3.4], [0.72, -2.0], [0.78, -1.1], [0.7, 0.1]]), armM, 0, 0, 0, el);
+    if (isGk){
+      ball(0.95, glove, 0, -4.7, 0, 1.0, 1.25, 0.6, el); ball(0.85, glove, 0, -5.6, 0, 1.0, 0.9, 0.55, el);
+      add(new T.CylinderGeometry(0.62, 0.62, 0.5, 12), mat(shirtC, 0.6), 0, -4.05, 0, el);
+    } else {
+      ball(0.6, skin, 0, -4.55, 0, 0.95, 1.2, 0.5, el);            // palm
+      ball(0.52, skin, 0.05, -5.25, 0, 0.9, 0.85, 0.42, el);       // fingers
+      ball(0.24, skin, 0.5, -4.55, 0, 0.9, 1.6, 0.9, el).rotation.z = 0.4; // thumb
+    }
+    arms.push(sh); elbows.push(el);
+  }
+  // Head with a real face
+  const head = new T.Group(); head.position.set(0, 26.3, 0); g.add(head);
+  // One smooth face shape: a ball gently pushed and pulled into a nose, brow, cheekbones, lips and chin
+  const HR = 1.75, HS = [1.06, 1.12, 0.92], HO = [-0.1, 0.15, 0];
+  const gs = (u, v, u0, v0, su, sv) => Math.exp(-(((u - u0)/su)**2 + ((v - v0)/sv)**2));
+  const facePt = (x, y, z) => {
+    const l = Math.hypot(x, y, z); x /= l; y /= l; z /= l;
+    const f = Math.max(0, x), f2 = f*f, f4 = f2*f2, u = z, v = y;
+    let r = 1 + f4*(0.2*gs(u, v, 0, -0.15, 0.085, 0.17) + 0.085*gs(u, v, 0, -0.27, 0.11, 0.07))   // nose
+      + f2*(-0.06*(gs(u, v, 0.32, 0.05, 0.16, 0.1) + gs(u, v, -0.32, 0.05, 0.16, 0.1))           // eye sockets
+      + 0.035*gs(u, v, 0, 0.2, 0.5, 0.07)                                                         // brow
+      + 0.03*(gs(u, v, 0.5, -0.12, 0.15, 0.12) + gs(u, v, -0.5, -0.12, 0.15, 0.12))               // cheekbones
+      + 0.05*gs(u, v, 0, -0.46, 0.17, 0.06) - 0.025*gs(u, v, 0, -0.5, 0.19, 0.02)                 // lips
+      + 0.05*gs(u, v, 0, -0.8, 0.2, 0.12));                                                       // chin
+    let px = x*r, py = y*r, pz = z*r;
+    if (v < 0){ pz *= 1 - 0.24*Math.min(1, -v)**1.3; py *= 1.07; }                                // narrower jaw, longer face
+    if (x < 0 && v < -0.15) px *= 1 - 0.4*Math.min(1, (-v - 0.15)/0.85);                          // back of the head curves into the neck
+    return [px*HR*HS[0] + HO[0], py*HR*HS[1] + HO[1], pz*HR*HS[2] + HO[2], u, v, f];
+  };
+  const hg = new T.SphereGeometry(1, 40, 30), hp = hg.attributes.position, cols = [];
+  for (let i = 0; i < hp.count; i++){
+    const [x, y, z, u, v, f] = facePt(hp.getX(i), hp.getY(i), hp.getZ(i));
+    hp.setXYZ(i, x, y, z);
+    // colour: pink lips, a little blush on the cheeks, darker nostrils and eye sockets
+    const k = f*f, lip = k*Math.min(1, 1.3*gs(u, v, 0, -0.475, 0.15, 0.05)), line = k*gs(u, v, 0, -0.5, 0.15, 0.012);
+    const nos = k*(gs(u, v, 0.06, -0.3, 0.035, 0.03) + gs(u, v, -0.06, -0.3, 0.035, 0.03)), blush = k*0.5*(gs(u, v, 0.45, -0.22, 0.15, 0.12) + gs(u, v, -0.45, -0.22, 0.15, 0.12));
+    const sock = k*0.6*(gs(u, v, 0.32, 0.05, 0.13, 0.08) + gs(u, v, -0.32, 0.05, 0.13, 0.08));
+    const dark = (1 - 0.5*line - 0.6*nos - 0.12*sock)*(1 - 0.12*lip);
+    cols.push(dark, dark*(1 - 0.42*lip - 0.06*blush), dark*(1 - 0.4*lip - 0.08*blush));
+  }
+  hg.setAttribute('color', new T.Float32BufferAttribute(cols, 3)); hg.computeVertexNormals();
+  const face = new T.Mesh(hg, mat(p.skin, 0.55, {vertexColors: true, emissive: lin(p.skin), emissiveIntensity: 0.05}));
+  face.castShadow = true; head.add(face);
+  const onFace = (u, v, out) => { const x = Math.sqrt(Math.max(0, 1 - u*u - v*v)), q = facePt(x, v, u), s = 1 + (out || 0); return [q[0]*s, q[1], q[2]]; };
+  for (const side of [-1, 1]){
+    ball(0.38, skin, -0.05, 0.0, side*1.55, 0.7, 1.1, 0.36, head); // ear
+    ball(0.15, mat(shade(p.skin, -0.25), 0.6), 0.02, 0.0, side*1.63, 0.6, 0.9, 0.3, head);
+  }
+  // Eyes: white, coloured middle, black dot, and an eyelid on top so they don't look bug-eyed
+  const lum = new T.Color(p.skin).getHSL({}).l;
+  const irisC = lum > 0.68 ? ['#4a7fb5', '#5b3a1e', '#5f7a3a', '#3b2a1a'][(p.idx + p.team*2) % 4] : '#3b2414';
+  const sclera = mat('#f4f1ea', 0.25), iris = mat(irisC, 0.25), pupil = mat('#050505', 0.15);
+  for (const side of [-1, 1]){
+    const [ex, ey, ez] = onFace(side*0.32, 0.05), cx = ex - 0.13;
+    ball(0.25, sclera, cx, ey, ez, 1, 1, 1, head, 14);
+    ball(0.14, iris, cx + 0.2, ey, ez, 0.45, 1, 1, head, 12);
+    ball(0.07, pupil, cx + 0.25, ey, ez, 0.4, 1, 1, head, 8);
+    const lid = add(new T.SphereGeometry(0.27, 14, 8, 0, Math.PI*2, 0, Math.PI*0.34), skin, cx, ey + 0.02, ez, head); lid.rotation.z = -0.3;
+    const [bx, by, bz] = onFace(side*0.33, 0.2);
+    const brow = add(new T.BoxGeometry(0.16, 0.11, 0.62), hairM, bx + 0.02, by, bz, head); brow.rotation.x = side*0.1; brow.rotation.y = side*0.35;
+  }
+  // Hair, beard, name and number (same styles as before, made smoother)
+  const numMat = dressPlayer3D(p, g, head, add, mat, hairM, white, shirtC, isGk, true, {back: -2.2, front: 2.12});
+  g.traverse(o => { if (o.isMesh && o.material !== numMat) o.castShadow = true; });
+  mergeParts(g);
+  G3.scene.add(g);
+  return {g, legs, arms, knees, elbows};
+}
+// Hair, beard, and the name and number on the shirt (used by both 3D looks)
+function dressPlayer3D(p, g, head, add, mat, hairM, white, shirtC, isGk, hi, numAt){
+  const T = THREE;
+  const look = LOOKS[p.name];
+  const style = look ? look.style : (p.idx*3 + p.team*2 + (p.num||0)) % 5;
+  const cap = (r, th, x, y, sc, m) => add(new T.SphereGeometry(r, hi ? 28 : 18, hi ? 18 : 12, 0, Math.PI*2, 0, Math.PI*th), m || hairM, x, y, 0, head).scale.set(...(sc || [1.03, 1.13, 0.94]));
+  if (style === 0){ cap(1.84, 0.47, -0.2, 0.25); }
+  else if (style === 1){ cap(1.82, 0.5, -0.2, 0.3); for (let i = 0; i < 14; i++){ const a = i*2.4, r = 1.35 + (i%3)*0.18, h = 0.8 + (i%4)*0.25; add(new T.SphereGeometry(0.62, 8, 6), hairM, -0.35 + Math.cos(a)*r*0.75, h, Math.sin(a)*r*0.8, head); } }
+  else if (style === 2){ cap(1.92, 0.62, -0.35, 0.15, [1.03, 1.12, 0.97]); add(new T.BoxGeometry(1.3, 2.4, 2.9), hairM, -1.1, -1.1, 0, head); const band = add(new T.TorusGeometry(1.78, 0.2, 6, 24), white, -0.05, 0.9, 0, head); band.rotation.x = Math.PI/2; band.rotation.y = 0.2; band.scale.set(1.02, 0.93, 1); }
+  else if (style === 3){ cap(1.79, 0.44, -0.2, 0.2, [1.03, 1.12, 0.93], mat(p.hair, 0.95)); add(new T.BoxGeometry(2.8, 1.05, 0.8), hairM, -0.3, 1.85, 0, head); }
+  else if (style === 4){ cap(1.78, 0.42, -0.1, 0.12); }
+  else if (style === 5){ cap(1.77, 0.4, -0.1, 0.1, [1.03, 1.13, 0.94], mat(p.skin, 0.35)); } // shaved head, a little shiny
+  if (look && look.beard) add(new T.SphereGeometry(1.24, hi ? 22 : 14, hi ? 14 : 10, 0, Math.PI*2, Math.PI*(hi ? 0.6 : 0.42), Math.PI*(hi ? 0.4 : 0.58)), hairM, 0.55, -0.85, 0, head).scale.set(1.02, 0.82, 1.18);
+  // Name and number on the back, small number on the front
+  const ink = (isGk || /#f4f4f4|#ffffff|#f7d917|#fbbf24|#74acdf|#5aa9e6|#f2c14e/.test(shirtC.toLowerCase())) ? '#111111' : '#ffffff';
+  const backTex = canvasTex(128, 128, (c2, w, h) => {
+    c2.fillStyle = ink; c2.textAlign = 'center'; c2.textBaseline = 'middle';
+    c2.font = '700 18px Barlow, sans-serif'; c2.fillText((p.name || '').toUpperCase().slice(0, 12), w/2, 16);
+    c2.font = '700 88px Teko, Impact, sans-serif'; c2.fillText(String(p.num), w/2, 82);
+  });
+  const numMat = new T.MeshStandardMaterial({map: backTex, transparent: true, roughness: 0.7, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2});
+  const back = new T.Mesh(new T.PlaneGeometry(4.8, 4.8), numMat);
+  back.position.set(numAt ? numAt.back : -2.15, 20.0, 0); back.rotation.y = -Math.PI/2; g.add(back);
+  const front = new T.Mesh(new T.PlaneGeometry(1.6, 1.6), numMat);
+  front.position.set(numAt ? numAt.front : 2.15, 21.0, 1.0); front.rotation.y = Math.PI/2; g.add(front);
+  return numMat;
+}
 function makePlayer3D(p, kit, isGk){
   const T = THREE, g = new T.Group(), toon = !!S.toon;
+  if (!toon) return makeRealPlayer3D(p, kit, isGk);
   // Cartoon look (like Mini Soccer Star): flat bright colours with 3 shades and a dark outline
   if (toon && !G3.toonGrad){ const d = new Uint8Array([70, 150, 235]); G3.toonGrad = new T.DataTexture(d, 3, 1, T.LuminanceFormat); G3.toonGrad.minFilter = G3.toonGrad.magFilter = T.NearestFilter; G3.toonGrad.needsUpdate = true; }
   const bright = c => { const col = new T.Color(c), hsl = {}; col.getHSL(hsl); col.setHSL(hsl.h, Math.min(1, hsl.s*1.3), Math.min(0.85, hsl.l*0.95)); return col; };
@@ -2415,28 +2602,7 @@ function makePlayer3D(p, kit, isGk){
   add(new T.ConeGeometry(0.3, 0.8, 8), skin, 1.82, -0.25, 0, head).rotation.z = -Math.PI/2;
   add(new T.BoxGeometry(0.18, 0.14, 0.75), mat('#7a3b2e', 0.6), 1.58, -0.88, 0, head);
   // Hair styles
-  const look = LOOKS[p.name];
-  const style = look ? look.style : (p.idx*3 + p.team*2 + (p.num||0)) % 5;
-  const cap = (r, th, x, y, sc, m) => add(new T.SphereGeometry(r, 18, 12, 0, Math.PI*2, 0, Math.PI*th), m || hairM, x, y, 0, head).scale.set(...(sc || [1.03, 1.13, 0.94]));
-  if (style === 0){ cap(1.84, 0.47, -0.2, 0.25); }
-  else if (style === 1){ cap(1.82, 0.5, -0.2, 0.3); for (let i = 0; i < 14; i++){ const a = i*2.4, r = 1.35 + (i%3)*0.18, h = 0.8 + (i%4)*0.25; add(new T.SphereGeometry(0.62, 8, 6), hairM, -0.35 + Math.cos(a)*r*0.75, h, Math.sin(a)*r*0.8, head); } }
-  else if (style === 2){ cap(1.92, 0.62, -0.35, 0.15, [1.03, 1.12, 0.97]); add(new T.BoxGeometry(1.3, 2.4, 2.9), hairM, -1.1, -1.1, 0, head); const band = add(new T.TorusGeometry(1.78, 0.2, 6, 24), white, -0.05, 0.9, 0, head); band.rotation.x = Math.PI/2; band.rotation.y = 0.2; band.scale.set(1.02, 0.93, 1); }
-  else if (style === 3){ cap(1.79, 0.44, -0.2, 0.2, [1.03, 1.12, 0.93], mat(p.hair, 0.95)); add(new T.BoxGeometry(2.8, 1.05, 0.8), hairM, -0.3, 1.85, 0, head); }
-  else if (style === 4){ cap(1.78, 0.42, -0.1, 0.12); }
-  else if (style === 5){ cap(1.77, 0.4, -0.1, 0.1, [1.03, 1.13, 0.94], mat(p.skin, 0.35)); } // shaved head, a little shiny
-  if (look && look.beard) add(new T.SphereGeometry(1.24, 14, 10, 0, Math.PI*2, Math.PI*0.42, Math.PI*0.58), hairM, 0.55, -0.85, 0, head).scale.set(1.02, 0.82, 1.18);
-  // Name and number on the back, small number on the front
-  const ink = (isGk || /#f4f4f4|#ffffff|#f7d917|#fbbf24|#74acdf|#5aa9e6|#f2c14e/.test(shirtC.toLowerCase())) ? '#111111' : '#ffffff';
-  const backTex = canvasTex(128, 128, (c2, w, h) => {
-    c2.fillStyle = ink; c2.textAlign = 'center'; c2.textBaseline = 'middle';
-    c2.font = '700 18px Barlow, sans-serif'; c2.fillText((p.name || '').toUpperCase().slice(0, 12), w/2, 16);
-    c2.font = '700 88px Teko, Impact, sans-serif'; c2.fillText(String(p.num), w/2, 82);
-  });
-  const numMat = new T.MeshStandardMaterial({map: backTex, transparent: true, roughness: 0.7, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2});
-  const back = new T.Mesh(new T.PlaneGeometry(4.8, 4.8), numMat);
-  back.position.set(-2.15, 20.0, 0); back.rotation.y = -Math.PI/2; g.add(back);
-  const front = new T.Mesh(new T.PlaneGeometry(1.6, 1.6), numMat);
-  front.position.set(2.15, 21.0, 1.0); front.rotation.y = Math.PI/2; g.add(front);
+  const numMat = dressPlayer3D(p, g, head, add, mat, hairM, white, shirtC, isGk, false);
   g.traverse(o => { if (o.isMesh && o.material !== numMat) o.castShadow = true; });
   mergeParts(g);
   if (toon){
